@@ -448,11 +448,7 @@ Examples:
                     if 'prompts_count' in config_snapshot:
                         f.write(f"# Prompts Count: {config_snapshot['prompts_count']}\n")
                     if 'test_cases_count' in config_snapshot:
-                        f.write(f"# Test Cases Count: {config_snapshot['test_cases_count']}\n")
-                
-                f.write(f"#\n")
-                f.write(f"# === EXPERIMENTAL RESULTS ===\n")
-                f.write(f"#\n\n")
+                        f.write(f"# Test Cases Count: {config_snapshot['test_cases_count']}\n\n")
                 
                 for i, result in enumerate(results, 1):
                     f.write("---\n\n")
@@ -473,10 +469,7 @@ Examples:
                     
                     response_model_name = result.get('response_model_name')
                     if response_model_name:
-                        if response_model_name != result['model_name']:
-                            f.write(f"RESPONSE MODEL: {response_model_name} ⚠️  (differs from config)\n")
-                        else:
-                            f.write(f"RESPONSE MODEL: {response_model_name} ✓ (matches config)\n")
+                        f.write(f"RESPONSE MODEL: {response_model_name}\n")
                     else:
                         f.write(f"RESPONSE MODEL: Not captured\n")
 
