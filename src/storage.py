@@ -24,20 +24,18 @@ class ExperimentStorage:
     def __init__(self, db_path: str = "results.db"):
         """Initialize storage with proper schema constraints."""
         self.db_path = Path(db_path)
+        self._current_run_metadata = {}  # Cache for active run metadata
         self._initialize_schema()
     
     def _initialize_schema(self) -> None:
         """Create the database schema with proper constraints and indices."""
         with self._get_connection() as conn:
-            # First, create tables with new schema
             self._create_tables(conn)
-            # Then, handle any necessary migrations
-            self._migrate_schema(conn)
     
     def _create_tables(self, conn) -> None:
-        """Create database tables with the latest schema."""
+        """Create database tables with the unified schema and indices."""
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS experiment_results (
+            CREATE TABLE IF NOT EXISTS experiments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -53,72 +51,34 @@ class ExperimentStorage:
                     'invalid_model', 'network_error', 'unknown_error'
                 )),
                 error_details TEXT,
+                run_started_timestamp TEXT NOT NULL,
+                run_completed_timestamp TEXT,
+                run_total_experiments INTEGER,
+                run_successful_experiments INTEGER,
+                run_config_snapshot TEXT,
                 UNIQUE(run_id, prompt_file, test_case_file, model_name)
             )
         """)
         
-        # Create run metadata table for tracking run-level information
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS experiment_runs (
-                run_id TEXT PRIMARY KEY,
-                started_timestamp TEXT NOT NULL,
-                completed_timestamp TEXT,
-                total_experiments INTEGER,
-                successful_experiments INTEGER,
-                config_snapshot TEXT
-            )
-        """)
-    
-    def _migrate_schema(self, conn) -> None:
-        """Handle database schema migrations for backward compatibility."""
-        # Check if response_model_name column exists
-        cursor = conn.execute("PRAGMA table_info(experiment_results)")
-        columns = [row[1] for row in cursor.fetchall()]
-        
-        if 'response_model_name' not in columns:
-            try:
-                conn.execute("ALTER TABLE experiment_results ADD COLUMN response_model_name TEXT")
-                print("📈 Database schema upgraded: Added response_model_name column")
-            except Exception as e:
-                print(f"⚠️  Schema migration note: {e}")
-        
-        # Ensure experiment_runs table exists (may be missing in older versions)
-        cursor = conn.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='experiment_runs'
-        """)
-        if not cursor.fetchone():
-            conn.execute("""
-                CREATE TABLE experiment_runs (
-                    run_id TEXT PRIMARY KEY,
-                    started_timestamp TEXT NOT NULL,
-                    completed_timestamp TEXT,
-                    total_experiments INTEGER,
-                    successful_experiments INTEGER,
-                    config_snapshot TEXT
-                )
-            """)
-            print("📈 Database schema upgraded: Added experiment_runs table")
-            
         # Create indices for efficient querying
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_run_id 
-            ON experiment_results(run_id)
+            CREATE INDEX IF NOT EXISTS idx_experiments_run_id 
+            ON experiments(run_id)
         """)
         
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_timestamp 
-            ON experiment_results(timestamp)
+            CREATE INDEX IF NOT EXISTS idx_experiments_timestamp 
+            ON experiments(timestamp)
         """)
         
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_status 
-            ON experiment_results(status)
+            CREATE INDEX IF NOT EXISTS idx_experiments_status 
+            ON experiments(status)
         """)
         
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_runs_started 
-            ON experiment_runs(started_timestamp)
+            CREATE INDEX IF NOT EXISTS idx_experiments_run_started 
+            ON experiments(run_started_timestamp)
         """)
     
     @contextmanager
@@ -145,27 +105,67 @@ class ExperimentStorage:
         total_experiments: int,
         config_snapshot: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Record the start of an experimental run."""
+        """Prepare run metadata for an experimental run."""
         started_timestamp = datetime.utcnow().isoformat()
         config_json = json.dumps(config_snapshot) if config_snapshot else None
         
-        with self._get_connection() as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO experiment_runs (
-                    run_id, started_timestamp, total_experiments, config_snapshot
-                ) VALUES (?, ?, ?, ?)
-            """, (run_id, started_timestamp, total_experiments, config_json))
+        # Cache run metadata to be included with each experiment result
+        self._current_run_metadata[run_id] = {
+            'run_started_timestamp': started_timestamp,
+            'run_completed_timestamp': None,
+            'run_total_experiments': total_experiments,
+            'run_successful_experiments': None,
+            'run_config_snapshot': config_json
+        }
     
     def complete_run(self, run_id: str, successful_experiments: int) -> None:
-        """Mark an experimental run as completed."""
+        """Mark an experimental run as completed by updating all experiments."""
         completed_timestamp = datetime.utcnow().isoformat()
         
         with self._get_connection() as conn:
             conn.execute("""
-                UPDATE experiment_runs 
-                SET completed_timestamp = ?, successful_experiments = ?
+                UPDATE experiments 
+                SET run_completed_timestamp = ?, run_successful_experiments = ?
                 WHERE run_id = ?
             """, (completed_timestamp, successful_experiments, run_id))
+            
+        # Update cached metadata if present
+        if run_id in self._current_run_metadata:
+            self._current_run_metadata[run_id]['run_completed_timestamp'] = completed_timestamp
+            self._current_run_metadata[run_id]['run_successful_experiments'] = successful_experiments
+    
+    def _get_run_metadata(self, run_id: str) -> Dict[str, Any]:
+        """Get run metadata from cache or existing experiment data."""
+        # First check cache
+        if run_id in self._current_run_metadata:
+            return self._current_run_metadata[run_id]
+        
+        # If not in cache, try to get from existing experiment in database
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT run_started_timestamp, run_completed_timestamp,
+                       run_total_experiments, run_successful_experiments, run_config_snapshot
+                FROM experiments WHERE run_id = ? LIMIT 1
+            """, (run_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    'run_started_timestamp': row['run_started_timestamp'],
+                    'run_completed_timestamp': row['run_completed_timestamp'],
+                    'run_total_experiments': row['run_total_experiments'],
+                    'run_successful_experiments': row['run_successful_experiments'],
+                    'run_config_snapshot': row['run_config_snapshot']
+                }
+        
+        # If no existing data, provide defaults (this shouldn't happen in normal flow)
+        return {
+            'run_started_timestamp': datetime.utcnow().isoformat(),
+            'run_completed_timestamp': None,
+            'run_total_experiments': None,
+            'run_successful_experiments': None,
+            'run_config_snapshot': None
+        }
     
     def store_result(
         self,
@@ -181,24 +181,34 @@ class ExperimentStorage:
         error_details: Optional[Dict[str, Any]] = None
     ) -> int:
         """
-        Store a single experimental result with atomic guarantees.
+        Store a single experimental result with atomic guarantees and run metadata.
         
         Returns the database ID of the inserted record.
         """
         timestamp = datetime.utcnow().isoformat()
         error_json = json.dumps(error_details) if error_details else None
         
+        # Get run metadata from cache or query existing experiment
+        run_metadata = self._get_run_metadata(run_id)
+        
         with self._get_connection() as conn:
             cursor = conn.execute("""
-                INSERT OR REPLACE INTO experiment_results (
+                INSERT OR REPLACE INTO experiments (
                     run_id, timestamp, prompt_file, test_case_file,
                     model_name, response_model_name, system_message, user_message,
-                    response_content, status, error_details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    response_content, status, error_details,
+                    run_started_timestamp, run_completed_timestamp,
+                    run_total_experiments, run_successful_experiments, run_config_snapshot
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 run_id, timestamp, prompt_file, test_case_file,
                 model_name, response_model_name, system_message, user_message,
-                response_content, status, error_json
+                response_content, status, error_json,
+                run_metadata['run_started_timestamp'],
+                run_metadata['run_completed_timestamp'],
+                run_metadata['run_total_experiments'],
+                run_metadata['run_successful_experiments'],
+                run_metadata['run_config_snapshot']
             ))
             return cursor.lastrowid
     
@@ -206,7 +216,7 @@ class ExperimentStorage:
         """Retrieve all results for a specific experimental run."""
         with self._get_connection() as conn:
             cursor = conn.execute("""
-                SELECT * FROM experiment_results 
+                SELECT * FROM experiments 
                 WHERE run_id = ? 
                 ORDER BY timestamp
             """, (run_id,))
@@ -216,8 +226,8 @@ class ExperimentStorage:
         """Get the run_id of the most recent experimental run."""
         with self._get_connection() as conn:
             cursor = conn.execute("""
-                SELECT run_id FROM experiment_results 
-                ORDER BY timestamp DESC 
+                SELECT run_id FROM experiments 
+                ORDER BY run_started_timestamp DESC 
                 LIMIT 1
             """)
             row = cursor.fetchone()
@@ -233,14 +243,9 @@ class ExperimentStorage:
     def get_all_run_ids(self) -> List[str]:
         """Get all unique run IDs in chronological order."""
         with self._get_connection() as conn:
-            # First try to get from run metadata table, then fall back to experiment results
             cursor = conn.execute("""
-                SELECT run_id, started_timestamp as sort_time
-                FROM experiment_runs
-                UNION
-                SELECT run_id, MIN(timestamp) as sort_time
-                FROM experiment_results
-                WHERE run_id NOT IN (SELECT run_id FROM experiment_runs)
+                SELECT DISTINCT run_id, MIN(run_started_timestamp) as sort_time
+                FROM experiments
                 GROUP BY run_id
                 ORDER BY sort_time
             """)
@@ -249,13 +254,7 @@ class ExperimentStorage:
     def get_run_summary(self, run_id: str) -> Dict[str, Any]:
         """Get a statistical summary of an experimental run."""
         with self._get_connection() as conn:
-            # Get run metadata
-            cursor = conn.execute("""
-                SELECT * FROM experiment_runs WHERE run_id = ?
-            """, (run_id,))
-            run_metadata = cursor.fetchone()
-            
-            # Get experiment statistics with graceful handling of missing columns
+            # Get experiment statistics and run metadata in a single query
             cursor = conn.execute("""
                 SELECT 
                     COUNT(*) as total_experiments,
@@ -265,24 +264,33 @@ class ExperimentStorage:
                     COUNT(DISTINCT model_name) as unique_models,
                     COUNT(DISTINCT CASE WHEN response_model_name IS NOT NULL THEN response_model_name END) as unique_response_models,
                     MIN(timestamp) as first_experiment_time,
-                    MAX(timestamp) as last_experiment_time
-                FROM experiment_results 
+                    MAX(timestamp) as last_experiment_time,
+                    MIN(run_started_timestamp) as run_started_timestamp,
+                    MIN(run_completed_timestamp) as run_completed_timestamp,
+                    MIN(run_total_experiments) as run_total_experiments,
+                    MIN(run_successful_experiments) as run_successful_experiments,
+                    MIN(run_config_snapshot) as run_config_snapshot
+                FROM experiments 
                 WHERE run_id = ?
             """, (run_id,))
-            experiment_stats = cursor.fetchone()
+            row = cursor.fetchone()
             
-            if not experiment_stats:
+            if not row:
                 return {}
                 
-            result = dict(experiment_stats)
+            result = dict(row)
             
-            # Add run metadata if available
-            if run_metadata:
-                result.update({
-                    'run_started_timestamp': run_metadata['started_timestamp'],
-                    'run_completed_timestamp': run_metadata['completed_timestamp'],
-                    'config_snapshot': json.loads(run_metadata['config_snapshot']) if run_metadata['config_snapshot'] else None
-                })
+            # Parse config snapshot if available
+            if result.get('run_config_snapshot'):
+                try:
+                    result['config_snapshot'] = json.loads(result['run_config_snapshot'])
+                except json.JSONDecodeError:
+                    result['config_snapshot'] = None
+            else:
+                result['config_snapshot'] = None
+                
+            # Remove the raw JSON field
+            result.pop('run_config_snapshot', None)
             
             return result
     
