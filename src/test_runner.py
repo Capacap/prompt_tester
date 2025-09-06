@@ -10,9 +10,8 @@ import os
 import time
 import asyncio
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Iterator, Optional, Union
+from typing import List, Tuple, Dict, Any, Iterator
 from dataclasses import dataclass
-from contextlib import asynccontextmanager
 
 from .storage import ExperimentStorage
 from .llm_client import LLMClient, LLMError
