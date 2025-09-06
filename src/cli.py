@@ -7,6 +7,7 @@ system, treating each command as a formal operation on the experimental manifold
 
 import sys
 import argparse
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
 import json
@@ -38,14 +39,15 @@ class PromptTesterCLI:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  python -m src.cli run                    # Run all experiments
+  python -m src.cli run                    # Run all experiments (async, fast)
+  python -m src.cli run --sync             # Run experiments sequentially (legacy)
+  python -m src.cli run --max-concurrent=10  # Override concurrency limit
   python -m src.cli results               # View latest results  
   python -m src.cli results --run-id=abc  # View specific run
   python -m src.cli latest                # Show latest run summary
   python -m src.cli list-runs             # List all experimental runs
   python -m src.cli export                # Export latest results to file
   python -m src.cli export --run-id=abc   # Export specific run to file
-  python -m src.cli export-latest         # Quick export of latest run
             """
         )
         
@@ -62,6 +64,22 @@ Examples:
             '--config', 
             default='config.json',
             help='Configuration file path (default: config.json)'
+        )
+        run_parser.add_argument(
+            '--async', 
+            action='store_true',
+            default=True,
+            help='Use asynchronous concurrent execution (default: True)'
+        )
+        run_parser.add_argument(
+            '--sync', 
+            action='store_true',
+            help='Force synchronous sequential execution (legacy mode)'
+        )
+        run_parser.add_argument(
+            '--max-concurrent',
+            type=int,
+            help='Override max concurrent requests from config'
         )
         
         # View results command
@@ -116,19 +134,6 @@ Examples:
             help='Filter by result status (default: all)'
         )
         
-        # Export latest command (QoL shortcut)
-        export_latest_parser = subparsers.add_parser('export-latest', help='Quick export of latest run results')
-        export_latest_parser.add_argument(
-            '--output', 
-            '-o',
-            help='Output file path (default: exports/results_<run_id>.txt)'
-        )
-        export_latest_parser.add_argument(
-            '--status',
-            choices=['all', 'success', 'failed'],
-            default='all',
-            help='Filter by result status (default: all)'
-        )
         
         return parser
     
@@ -156,8 +161,6 @@ Examples:
                 return self._validate_setup(parsed_args)
             elif parsed_args.command == 'export':
                 return self._export_results(parsed_args)
-            elif parsed_args.command == 'export-latest':
-                return self._export_latest(parsed_args)
             else:
                 print(f"Unknown command: {parsed_args.command}")
                 return 1
@@ -167,7 +170,7 @@ Examples:
             return 1
     
     def _run_experiments(self, args) -> int:
-        """Execute the experimental matrix."""
+        """Execute the experimental matrix with async or sync mode."""
         print("Initializing experimental framework...")
         
         config = ExperimentConfig(
@@ -177,8 +180,23 @@ Examples:
         
         runner = TestRunner(config)
         
+        # Override concurrent requests if specified
+        if hasattr(args, 'max_concurrent') and args.max_concurrent:
+            runner.llm_client.max_concurrent_requests = args.max_concurrent
+            # Update the semaphore
+            runner.llm_client._rate_limiter = asyncio.Semaphore(args.max_concurrent)
+        
+        # Determine execution mode
+        use_async = not args.sync if hasattr(args, 'sync') else True
+        
         try:
-            run_id = runner.run_experiments()
+            if use_async:
+                print("Using asynchronous concurrent execution for optimal performance...")
+                run_id = asyncio.run(runner.run_experiments_async())
+            else:
+                print("Using synchronous sequential execution (legacy mode)...")
+                run_id = runner.run_experiments()
+            
             print(f"\nExperimental run completed successfully.")
             print(f"Run ID: {run_id}")
             print(f"\nTo view results: python -m src.cli results --run-id={run_id}")
@@ -242,9 +260,25 @@ Examples:
         print(f"Success rate: {(summary.get('successful', 0) / max(summary.get('total_experiments', 1), 1) * 100):.1f}%")
         print(f"Unique prompts: {summary.get('unique_prompts', 0)}")
         print(f"Unique test cases: {summary.get('unique_test_cases', 0)}")
-        print(f"Unique models: {summary.get('unique_models', 0)}")
-        print(f"Start time: {summary.get('start_time', 'Unknown')}")
-        print(f"End time: {summary.get('end_time', 'Unknown')}")
+        print(f"Configured models: {summary.get('unique_models', 0)}")
+        print(f"Response models: {summary.get('unique_response_models', 0)}")
+        
+        # Show enhanced timing information
+        run_start = summary.get('run_started_timestamp', summary.get('first_experiment_time', 'Unknown'))
+        run_end = summary.get('run_completed_timestamp', summary.get('last_experiment_time', 'Unknown'))
+        print(f"Run started: {run_start}")
+        print(f"Run completed: {run_end}")
+        
+        # Show configuration snapshot if available
+        config_snapshot = summary.get('config_snapshot')
+        if config_snapshot:
+            print(f"\nConfiguration:")
+            if 'max_concurrent_requests' in config_snapshot:
+                print(f"  Max concurrent requests: {config_snapshot['max_concurrent_requests']}")
+            if 'request_delay_seconds' in config_snapshot:
+                print(f"  Request delay: {config_snapshot['request_delay_seconds']}s")
+            if 'execution_mode' in config_snapshot:
+                print(f"  Execution mode: {config_snapshot['execution_mode']}")
         
         # Show status breakdown
         status_counts = {}
@@ -368,25 +402,83 @@ Examples:
             export_dir.mkdir(exist_ok=True)
             output_path = export_dir / f"results_{run_id[:8]}.txt"
         
-        # Export results
+        # Get enhanced run metadata
+        run_summary = storage.get_run_summary(run_id)
+        
+        # Export results with comprehensive metadata
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(f"# Experimental Results Export\n")
                 f.write(f"# Run ID: {run_id}\n")
                 f.write(f"# Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"# Total Results: {len(results)}\n")
-                f.write(f"# Status Filter: {args.status}\n\n")
+                f.write(f"# Status Filter: {args.status}\n")
+                f.write(f"#\n")
+                f.write(f"# === RUN METADATA ===\n")
+                
+                # Run timing information
+                run_start = run_summary.get('run_started_timestamp', run_summary.get('first_experiment_time', 'Unknown'))
+                run_end = run_summary.get('run_completed_timestamp', run_summary.get('last_experiment_time', 'Unknown'))
+                f.write(f"# Run Started: {run_start}\n")
+                f.write(f"# Run Completed: {run_end}\n")
+                
+                # Run statistics
+                total_experiments = run_summary.get('total_experiments', len(results))
+                successful = run_summary.get('successful', len([r for r in results if r['status'] == 'success']))
+                success_rate = (successful / max(total_experiments, 1)) * 100
+                f.write(f"# Success Rate: {successful}/{total_experiments} ({success_rate:.1f}%)\n")
+                f.write(f"# Unique Prompts: {run_summary.get('unique_prompts', 'Unknown')}\n")
+                f.write(f"# Unique Test Cases: {run_summary.get('unique_test_cases', 'Unknown')}\n")
+                f.write(f"# Configured Models: {run_summary.get('unique_models', 'Unknown')}\n")
+                f.write(f"# Response Models: {run_summary.get('unique_response_models', 'Unknown')}\n")
+                
+                # Configuration snapshot
+                config_snapshot = run_summary.get('config_snapshot')
+                if config_snapshot:
+                    f.write(f"#\n")
+                    f.write(f"# === CONFIGURATION SNAPSHOT ===\n")
+                    if 'max_concurrent_requests' in config_snapshot:
+                        f.write(f"# Max Concurrent Requests: {config_snapshot['max_concurrent_requests']}\n")
+                    if 'request_delay_seconds' in config_snapshot:
+                        f.write(f"# Request Delay: {config_snapshot['request_delay_seconds']}s\n")
+                    if 'execution_mode' in config_snapshot:
+                        f.write(f"# Execution Mode: {config_snapshot['execution_mode']}\n")
+                    if 'models' in config_snapshot:
+                        f.write(f"# Configured Models: {', '.join(config_snapshot['models'])}\n")
+                    if 'prompts_count' in config_snapshot:
+                        f.write(f"# Prompts Count: {config_snapshot['prompts_count']}\n")
+                    if 'test_cases_count' in config_snapshot:
+                        f.write(f"# Test Cases Count: {config_snapshot['test_cases_count']}\n")
+                
+                f.write(f"#\n")
+                f.write(f"# === EXPERIMENTAL RESULTS ===\n")
+                f.write(f"#\n\n")
                 
                 for i, result in enumerate(results, 1):
                     f.write("---\n\n")
+                    
+                    # Experiment header with metadata
+                    f.write(f"EXPERIMENT {i}/{len(results)}\n")
+                    f.write(f"TIMESTAMP: {result.get('timestamp', 'Unknown')}\n")
+                    f.write(f"STATUS: {result['status']}\n")
+                    f.write(f"\n")
                     
                     # Test case name
                     test_case_name = Path(result['test_case_file']).stem
                     f.write(f"TEST CASE: {test_case_name}\n")
 
-                    # Model name
-                    model_name = Path(result['model_name']).stem
-                    f.write(f"MODEL NAME: {model_name}\n")
+                    # Model information
+                    config_model_name = Path(result['model_name']).stem
+                    f.write(f"CONFIGURED MODEL: {config_model_name}\n")
+                    
+                    response_model_name = result.get('response_model_name')
+                    if response_model_name:
+                        if response_model_name != result['model_name']:
+                            f.write(f"RESPONSE MODEL: {response_model_name} ⚠️  (differs from config)\n")
+                        else:
+                            f.write(f"RESPONSE MODEL: {response_model_name} ✓ (matches config)\n")
+                    else:
+                        f.write(f"RESPONSE MODEL: Not captured\n")
 
                     # Prompt file name
                     prompt_file = Path(result['prompt_file']).stem
@@ -421,38 +513,22 @@ Examples:
             
             print(f"✓ Exported {len(results)} results to: {output_path}")
             print(f"  Run ID: {run_id}")
+            print(f"  Run started: {run_summary.get('run_started_timestamp', 'Unknown')}")
+            print(f"  Run completed: {run_summary.get('run_completed_timestamp', 'Unknown')}")
             print(f"  Status filter: {args.status}")
+            print(f"  Success rate: {run_summary.get('successful', 0)}/{run_summary.get('total_experiments', len(results))} experiments")
+            
+            # Show configuration info if available
+            config_snapshot = run_summary.get('config_snapshot')
+            if config_snapshot and config_snapshot.get('max_concurrent_requests'):
+                print(f"  Execution mode: {'Async' if config_snapshot.get('max_concurrent_requests', 0) > 1 else 'Sync'} ({config_snapshot.get('max_concurrent_requests', 1)} concurrent)")
+            
             return 0
             
         except Exception as e:
             print(f"Error writing export file: {e}")
             return 1
     
-    def _export_latest(self, args) -> int:
-        """Export results from the latest experimental run (QoL shortcut)."""
-        storage = ExperimentStorage()
-        
-        # Get the latest run ID
-        latest_run_id = storage.get_latest_run_id()
-        if not latest_run_id:
-            print("No experimental runs found.")
-            return 1
-        
-        # Create a mock args object that mimics the export command with latest run
-        class MockArgs:
-            def __init__(self, run_id, output, status):
-                self.run_id = run_id
-                self.output = output
-                self.status = status
-        
-        mock_args = MockArgs(
-            run_id=latest_run_id,
-            output=args.output,
-            status=args.status
-        )
-        
-        print(f"Exporting latest run: {latest_run_id[:8]}...")
-        return self._export_results(mock_args)
     
     def _print_results_table(self, results: List[Dict[str, Any]]) -> None:
         """Print results in a formatted table."""
@@ -461,17 +537,18 @@ Examples:
             return
         
         print(f"Results ({len(results)} experiments):")
-        print("-" * 100)
-        print(f"{'Prompt':<25} {'Test Case':<25} {'Model':<20} {'Status':<10}")
-        print("-" * 100)
+        print("-" * 120)
+        print(f"{'Prompt':<20} {'Test Case':<20} {'Config Model':<18} {'Response Model':<18} {'Status':<10}")
+        print("-" * 120)
         
         for result in results:
-            prompt = result['prompt_file'][:24]
-            test_case = result['test_case_file'][:24]
-            model = result['model_name'][:19]
+            prompt = result['prompt_file'][:19]
+            test_case = result['test_case_file'][:19]
+            config_model = result['model_name'][:17]
+            response_model = (result.get('response_model_name') or 'N/A')[:17]
             status = result['status']
             
-            print(f"{prompt:<25} {test_case:<25} {model:<20} {status:<10}")
+            print(f"{prompt:<20} {test_case:<20} {config_model:<18} {response_model:<18} {status:<10}")
     
     def _print_results_summary(self, results: List[Dict[str, Any]]) -> None:
         """Print a statistical summary of results."""

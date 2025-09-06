@@ -35,6 +35,7 @@ Example configuration:
 ```json
 {
   "request_delay_seconds": 1.0,
+  "max_concurrent_requests": 5,
   "models": [
     {
       "name": "gpt-4",
@@ -57,8 +58,14 @@ python -m src validate
 ### 4. Run Experiments
 
 ```bash
-# Execute all prompt/test case/model combinations
+# Execute all prompt/test case/model combinations (async, fast)
 python -m src run
+
+# Execute with custom concurrency settings
+python -m src run --max-concurrent=10
+
+# Execute in legacy sequential mode
+python -m src run --sync
 
 # View latest results
 python -m src latest
@@ -136,11 +143,20 @@ def authenticate_user(username, password):
 
 #### Run Experiments
 ```bash
-# Run all combinations
+# Run all combinations (asynchronous, high-performance)
 python -m src run
+
+# Run with custom concurrency limit
+python -m src run --max-concurrent=10
+
+# Run in sequential mode (legacy compatibility)
+python -m src run --sync
 
 # Run specific models only
 python -m src run --models gpt-4 claude-3-opus-20240229
+
+# Combine options for fine-tuned control
+python -m src run --models gpt-4 --max-concurrent=3
 ```
 
 #### View Results
@@ -161,6 +177,11 @@ python -m src results --status=failed
 # Different output formats
 python -m src results --format=json
 python -m src results --format=summary
+
+# Export results (defaults to latest run)
+python -m src export
+python -m src export --run-id=abc123
+python -m src export --status=success
 ```
 
 #### Manage Runs
@@ -216,6 +237,8 @@ Results can be analyzed through:
 Add new models to `config.json`:
 ```json
 {
+  "request_delay_seconds": 1.0,
+  "max_concurrent_requests": 5,
   "models": [
     {
       "name": "gpt-3.5-turbo",
@@ -229,9 +252,17 @@ Add new models to `config.json`:
 }
 ```
 
+### Performance Configuration
+
+- **max_concurrent_requests**: Controls how many API requests run simultaneously (default: 5)
+- **request_delay_seconds**: Minimum delay between requests for rate limiting (default: 1.0)
+
+Optimal settings depend on your API rate limits and system capacity. Higher concurrency increases throughput but may trigger rate limiting.
+
 ### Programmatic Access
 
 ```python
+import asyncio
 from src import TestRunner, ExperimentConfig, ExperimentStorage
 
 # Configure experiment
@@ -239,7 +270,16 @@ config = ExperimentConfig(
     models=["gpt-4", "claude-3-opus-20240229"]
 )
 
-# Run experiments
+# Run experiments asynchronously (recommended)
+async def run_async_experiments():
+    runner = TestRunner(config)
+    run_id = await runner.run_experiments_async()
+    return run_id
+
+# Execute async experiments
+run_id = asyncio.run(run_async_experiments())
+
+# Or run synchronously (legacy mode)
 runner = TestRunner(config)
 run_id = runner.run_experiments()
 
@@ -263,9 +303,11 @@ This framework embodies several key principles:
 - **Formal Constraints**: Database schema enforces data consistency
 
 ### Scalable Architecture
+- **Asynchronous Execution**: Concurrent request processing with intelligent rate limiting
 - **Modular Design**: Components are loosely coupled and independently testable
 - **Extensible Framework**: New models and test types integrate seamlessly
 - **Efficient Storage**: Optimized database schema with proper indexing
+- **Antifragile Concurrency**: System becomes more efficient under load through elegant parallelization
 
 ## Contributing
 

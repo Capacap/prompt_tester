@@ -29,41 +29,97 @@ class ExperimentStorage:
     def _initialize_schema(self) -> None:
         """Create the database schema with proper constraints and indices."""
         with self._get_connection() as conn:
+            # First, create tables with new schema
+            self._create_tables(conn)
+            # Then, handle any necessary migrations
+            self._migrate_schema(conn)
+    
+    def _create_tables(self, conn) -> None:
+        """Create database tables with the latest schema."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS experiment_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                prompt_file TEXT NOT NULL,
+                test_case_file TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                response_model_name TEXT,
+                system_message TEXT NOT NULL,
+                user_message TEXT NOT NULL,
+                response_content TEXT,
+                status TEXT NOT NULL CHECK(status IN (
+                    'success', 'api_error', 'timeout', 'rate_limit', 
+                    'invalid_model', 'network_error', 'unknown_error'
+                )),
+                error_details TEXT,
+                UNIQUE(run_id, prompt_file, test_case_file, model_name)
+            )
+        """)
+        
+        # Create run metadata table for tracking run-level information
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS experiment_runs (
+                run_id TEXT PRIMARY KEY,
+                started_timestamp TEXT NOT NULL,
+                completed_timestamp TEXT,
+                total_experiments INTEGER,
+                successful_experiments INTEGER,
+                config_snapshot TEXT
+            )
+        """)
+    
+    def _migrate_schema(self, conn) -> None:
+        """Handle database schema migrations for backward compatibility."""
+        # Check if response_model_name column exists
+        cursor = conn.execute("PRAGMA table_info(experiment_results)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'response_model_name' not in columns:
+            try:
+                conn.execute("ALTER TABLE experiment_results ADD COLUMN response_model_name TEXT")
+                print("📈 Database schema upgraded: Added response_model_name column")
+            except Exception as e:
+                print(f"⚠️  Schema migration note: {e}")
+        
+        # Ensure experiment_runs table exists (may be missing in older versions)
+        cursor = conn.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='experiment_runs'
+        """)
+        if not cursor.fetchone():
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS experiment_results (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    prompt_file TEXT NOT NULL,
-                    test_case_file TEXT NOT NULL,
-                    model_name TEXT NOT NULL,
-                    system_message TEXT NOT NULL,
-                    user_message TEXT NOT NULL,
-                    response_content TEXT,
-                    status TEXT NOT NULL CHECK(status IN (
-                        'success', 'api_error', 'timeout', 'rate_limit', 
-                        'invalid_model', 'network_error', 'unknown_error'
-                    )),
-                    error_details TEXT,
-                    UNIQUE(run_id, prompt_file, test_case_file, model_name)
+                CREATE TABLE experiment_runs (
+                    run_id TEXT PRIMARY KEY,
+                    started_timestamp TEXT NOT NULL,
+                    completed_timestamp TEXT,
+                    total_experiments INTEGER,
+                    successful_experiments INTEGER,
+                    config_snapshot TEXT
                 )
             """)
+            print("📈 Database schema upgraded: Added experiment_runs table")
             
-            # Create indices for efficient querying
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_run_id 
-                ON experiment_results(run_id)
-            """)
-            
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_timestamp 
-                ON experiment_results(timestamp)
-            """)
-            
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_status 
-                ON experiment_results(status)
-            """)
+        # Create indices for efficient querying
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_run_id 
+            ON experiment_results(run_id)
+        """)
+        
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_timestamp 
+            ON experiment_results(timestamp)
+        """)
+        
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_status 
+            ON experiment_results(status)
+        """)
+        
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_runs_started 
+            ON experiment_runs(started_timestamp)
+        """)
     
     @contextmanager
     def _get_connection(self):
@@ -83,6 +139,34 @@ class ExperimentStorage:
         """Generate a unique identifier for an experimental run."""
         return str(uuid.uuid4())
     
+    def start_run(
+        self, 
+        run_id: str, 
+        total_experiments: int,
+        config_snapshot: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Record the start of an experimental run."""
+        started_timestamp = datetime.utcnow().isoformat()
+        config_json = json.dumps(config_snapshot) if config_snapshot else None
+        
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO experiment_runs (
+                    run_id, started_timestamp, total_experiments, config_snapshot
+                ) VALUES (?, ?, ?, ?)
+            """, (run_id, started_timestamp, total_experiments, config_json))
+    
+    def complete_run(self, run_id: str, successful_experiments: int) -> None:
+        """Mark an experimental run as completed."""
+        completed_timestamp = datetime.utcnow().isoformat()
+        
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE experiment_runs 
+                SET completed_timestamp = ?, successful_experiments = ?
+                WHERE run_id = ?
+            """, (completed_timestamp, successful_experiments, run_id))
+    
     def store_result(
         self,
         run_id: str,
@@ -92,6 +176,7 @@ class ExperimentStorage:
         system_message: str,
         user_message: str,
         response_content: Optional[str] = None,
+        response_model_name: Optional[str] = None,
         status: str = "success",
         error_details: Optional[Dict[str, Any]] = None
     ) -> int:
@@ -107,12 +192,12 @@ class ExperimentStorage:
             cursor = conn.execute("""
                 INSERT OR REPLACE INTO experiment_results (
                     run_id, timestamp, prompt_file, test_case_file,
-                    model_name, system_message, user_message,
+                    model_name, response_model_name, system_message, user_message,
                     response_content, status, error_details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 run_id, timestamp, prompt_file, test_case_file,
-                model_name, system_message, user_message,
+                model_name, response_model_name, system_message, user_message,
                 response_content, status, error_json
             ))
             return cursor.lastrowid
@@ -148,17 +233,29 @@ class ExperimentStorage:
     def get_all_run_ids(self) -> List[str]:
         """Get all unique run IDs in chronological order."""
         with self._get_connection() as conn:
+            # First try to get from run metadata table, then fall back to experiment results
             cursor = conn.execute("""
-                SELECT run_id 
-                FROM experiment_results 
+                SELECT run_id, started_timestamp as sort_time
+                FROM experiment_runs
+                UNION
+                SELECT run_id, MIN(timestamp) as sort_time
+                FROM experiment_results
+                WHERE run_id NOT IN (SELECT run_id FROM experiment_runs)
                 GROUP BY run_id
-                ORDER BY MIN(timestamp)
+                ORDER BY sort_time
             """)
             return [row['run_id'] for row in cursor.fetchall()]
     
     def get_run_summary(self, run_id: str) -> Dict[str, Any]:
         """Get a statistical summary of an experimental run."""
         with self._get_connection() as conn:
+            # Get run metadata
+            cursor = conn.execute("""
+                SELECT * FROM experiment_runs WHERE run_id = ?
+            """, (run_id,))
+            run_metadata = cursor.fetchone()
+            
+            # Get experiment statistics with graceful handling of missing columns
             cursor = conn.execute("""
                 SELECT 
                     COUNT(*) as total_experiments,
@@ -166,13 +263,28 @@ class ExperimentStorage:
                     COUNT(DISTINCT prompt_file) as unique_prompts,
                     COUNT(DISTINCT test_case_file) as unique_test_cases,
                     COUNT(DISTINCT model_name) as unique_models,
-                    MIN(timestamp) as start_time,
-                    MAX(timestamp) as end_time
+                    COUNT(DISTINCT CASE WHEN response_model_name IS NOT NULL THEN response_model_name END) as unique_response_models,
+                    MIN(timestamp) as first_experiment_time,
+                    MAX(timestamp) as last_experiment_time
                 FROM experiment_results 
                 WHERE run_id = ?
             """, (run_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else {}
+            experiment_stats = cursor.fetchone()
+            
+            if not experiment_stats:
+                return {}
+                
+            result = dict(experiment_stats)
+            
+            # Add run metadata if available
+            if run_metadata:
+                result.update({
+                    'run_started_timestamp': run_metadata['started_timestamp'],
+                    'run_completed_timestamp': run_metadata['completed_timestamp'],
+                    'config_snapshot': json.loads(run_metadata['config_snapshot']) if run_metadata['config_snapshot'] else None
+                })
+            
+            return result
     
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """Convert a database row to a dictionary with proper JSON parsing."""

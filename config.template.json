@@ -1,5 +1,6 @@
 {
   "request_delay_seconds": 1.0,
+  "max_concurrent_requests": 5,
   "models": [
     {
       "name": "gpt-4",

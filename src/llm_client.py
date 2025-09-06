@@ -17,13 +17,14 @@ Environment Variables:
 import json
 import os
 import time
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 try:
     import litellm
-    from litellm import completion
+    from litellm import completion, acompletion
 except ImportError:
     raise ImportError(
         "LiteLLM is required but not installed. "
@@ -62,8 +63,13 @@ class LLMClient:
         self.config_path = Path(config_path)
         self.config = self._load_config()
         self.request_delay = self.config.get("request_delay_seconds", 1.0)
+        self.max_concurrent_requests = self.config.get("max_concurrent_requests", 5)
         self.models = [ModelConfig(**model) for model in self.config.get("models", [])]
         self._setup_environment()
+        
+        # Rate limiting semaphore for async operations
+        self._rate_limiter = asyncio.Semaphore(self.max_concurrent_requests)
+        self._last_request_time = 0
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from JSON file with proper error handling."""
@@ -103,13 +109,65 @@ class LLMClient:
         system_message: str,
         user_message: str,
         model_name: str,
+        temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
         **kwargs
     ) -> LLMResponse:
         """
-        Asynchronous completion - placeholder for future async implementation.
-        Currently delegates to synchronous method.
+        Asynchronous completion using litellm's async interface.
+        
+        This method implements true concurrent processing while maintaining
+        rate limiting through semaphores, creating an antifragile system
+        that can handle multiple simultaneous requests elegantly.
         """
-        return self.complete(system_message, user_message, model_name, **kwargs)
+        if model_name not in self.get_available_models():
+            raise ValueError(
+                f"Model '{model_name}' not found in configuration. "
+                f"Available models: {self.get_available_models()}"
+            )
+        
+        async with self._rate_limiter:
+            # Apply rate limiting delay in async manner
+            current_time = time.time()
+            if hasattr(self, '_last_request_time'):
+                elapsed = current_time - self._last_request_time
+                if elapsed < self.request_delay:
+                    await asyncio.sleep(self.request_delay - elapsed)
+            
+            self._last_request_time = time.time()
+            
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ]
+            
+            completion_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                **kwargs
+            }
+            
+            if max_tokens is not None:
+                completion_kwargs["max_tokens"] = max_tokens
+            
+            try:
+                # Use litellm's async completion
+                response = await acompletion(**completion_kwargs)
+                
+                # Extract response content
+                content = response.choices[0].message.content
+                
+                return LLMResponse(
+                    content=content,
+                    model=response.model,
+                    usage=response.usage.model_dump() if hasattr(response.usage, 'model_dump') else dict(response.usage) if response.usage else None,
+                    finish_reason=response.choices[0].finish_reason
+                )
+                
+            except Exception as e:
+                # Re-raise with additional context
+                raise self._classify_error(e, model_name)
     
     def complete(
         self,
