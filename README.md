@@ -52,26 +52,26 @@ Example configuration:
 ### 3. Validate Setup
 
 ```bash
-python -m src validate
+python -m promptester validate
 ```
 
 ### 4. Run Experiments
 
 ```bash
 # Execute all prompt/test case/model combinations (async, fast)
-python -m src run
+python -m promptester run
 
 # Execute with custom concurrency settings
-python -m src run --max-concurrent=10
+python -m promptester run --max-concurrent=10
 
 # Execute in legacy sequential mode
-python -m src run --sync
+python -m promptester run --sync
 
 # View latest results
-python -m src latest
+python -m promptester latest
 
 # View detailed results
-python -m src results
+python -m promptester results
 ```
 
 ## Architecture
@@ -97,7 +97,7 @@ prompt_tester/
 │   ├── refactoring_suggestions.md
 │   ├── algorithm_optimization.md
 │   └── design_pattern_advice.md
-├── src/                  # Framework implementation
+├── promptester/          # Framework implementation
 │   ├── storage.py
 │   ├── llm_client.py
 │   ├── test_runner.py
@@ -144,53 +144,53 @@ def authenticate_user(username, password):
 #### Run Experiments
 ```bash
 # Run all combinations (asynchronous, high-performance)
-python -m src run
+python -m promptester run
 
 # Run with custom concurrency limit
-python -m src run --max-concurrent=10
+python -m promptester run --max-concurrent=10
 
 # Run in sequential mode (legacy compatibility)
-python -m src run --sync
+python -m promptester run --sync
 
 # Run specific models only
-python -m src run --models gpt-4 claude-3-opus-20240229
+python -m promptester run --models gpt-4 claude-3-opus-20240229
 
 # Combine options for fine-tuned control
-python -m src run --models gpt-4 --max-concurrent=3
+python -m promptester run --models gpt-4 --max-concurrent=3
 ```
 
 #### View Results
 ```bash
 # Latest run summary
-python -m src latest
+python -m promptester latest
 
 # Detailed results (latest run)
-python -m src results
+python -m promptester results
 
 # Specific run results
-python -m src results --run-id=abc123
+python -m promptester results --run-id=abc123
 
 # Filter by status
-python -m src results --status=success
-python -m src results --status=failed
+python -m promptester results --status=success
+python -m promptester results --status=failed
 
 # Different output formats
-python -m src results --format=json
-python -m src results --format=summary
+python -m promptester results --format=json
+python -m promptester results --format=summary
 
 # Export results (defaults to latest run)
-python -m src export
-python -m src export --run-id=abc123
-python -m src export --status=success
+python -m promptester export
+python -m promptester export --run-id=abc123
+python -m promptester export --status=success
 ```
 
 #### Manage Runs
 ```bash
 # List all experimental runs
-python -m src list-runs
+python -m promptester list-runs
 
 # Validate setup
-python -m src validate
+python -m promptester validate
 ```
 
 ## Experimental Design
@@ -263,7 +263,7 @@ Optimal settings depend on your API rate limits and system capacity. Higher conc
 
 ```python
 import asyncio
-from src import TestRunner, ExperimentConfig, ExperimentStorage
+from promptester import TestRunner, ExperimentConfig, ExperimentStorage
 
 # Configure experiment
 config = ExperimentConfig(

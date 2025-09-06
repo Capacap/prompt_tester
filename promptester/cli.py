@@ -39,15 +39,15 @@ class PromptTesterCLI:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  python -m src.cli run                    # Run all experiments (async, fast)
-  python -m src.cli run --sync             # Run experiments sequentially (legacy)
-  python -m src.cli run --max-concurrent=10  # Override concurrency limit
-  python -m src.cli results               # View latest results  
-  python -m src.cli results --run-id=abc  # View specific run
-  python -m src.cli latest                # Show latest run summary
-  python -m src.cli list-runs             # List all experimental runs
-  python -m src.cli export                # Export latest results to file
-  python -m src.cli export --run-id=abc   # Export specific run to file
+  python -m promptester run                    # Run all experiments (async, fast)
+  python -m promptester run --sync             # Run experiments sequentially (legacy)
+  python -m promptester run --max-concurrent=10  # Override concurrency limit
+  python -m promptester results               # View latest results  
+  python -m promptester results --run-id=abc  # View specific run
+  python -m promptester latest                # Show latest run summary
+  python -m promptester list-runs             # List all experimental runs
+  python -m promptester export                # Export latest results to file
+  python -m promptester export --run-id=abc   # Export specific run to file
             """
         )
         
@@ -324,7 +324,7 @@ Examples:
         print("Validating experimental setup...")
         
         # Check directory structure
-        required_dirs = ['prompts', 'test_cases', 'src']
+        required_dirs = ['prompts', 'test_cases', 'promptester']
         for dir_name in required_dirs:
             dir_path = Path(dir_name)
             if dir_path.exists():
