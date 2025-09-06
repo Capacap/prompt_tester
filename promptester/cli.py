@@ -464,7 +464,7 @@ Examples:
                     f.write(f"TEST CASE: {test_case_name}\n")
 
                     # Model information
-                    config_model_name = Path(result['model_name']).stem
+                    config_model_name = result['model_name']
                     f.write(f"CONFIGURED MODEL: {config_model_name}\n")
                     
                     response_model_name = result.get('response_model_name')
@@ -530,18 +530,18 @@ Examples:
             return
         
         print(f"Results ({len(results)} experiments):")
-        print("-" * 120)
-        print(f"{'Prompt':<20} {'Test Case':<20} {'Config Model':<18} {'Response Model':<18} {'Status':<10}")
-        print("-" * 120)
-        
+        print("-" * 140)
+        print(f"{'Prompt':<15} {'Test Case':<15} {'Config Model':<25} {'Response Model':<25} {'Status':<10}")
+        print("-" * 140)
+
         for result in results:
-            prompt = result['prompt_file'][:19]
-            test_case = result['test_case_file'][:19]
-            config_model = result['model_name'][:17]
-            response_model = (result.get('response_model_name') or 'N/A')[:17]
+            prompt = Path(result['prompt_file']).stem[:14]
+            test_case = Path(result['test_case_file']).stem[:14]
+            config_model = result['model_name'][:24]
+            response_model = (result.get('response_model_name') or 'N/A')[:24]
             status = result['status']
-            
-            print(f"{prompt:<20} {test_case:<20} {config_model:<18} {response_model:<18} {status:<10}")
+
+            print(f"{prompt:<15} {test_case:<15} {config_model:<25} {response_model:<25} {status:<10}")
     
     def _print_results_summary(self, results: List[Dict[str, Any]]) -> None:
         """Print a statistical summary of results."""
