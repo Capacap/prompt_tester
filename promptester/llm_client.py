@@ -132,8 +132,10 @@ class LLMClient:
             if hasattr(self, '_last_request_time'):
                 elapsed = current_time - self._last_request_time
                 if elapsed < self.request_delay:
-                    await asyncio.sleep(self.request_delay - elapsed)
-            
+                    delay_needed = self.request_delay - elapsed
+                    print(f"⏳ Rate limiting: waiting {delay_needed:.1f}s for {model_name}")
+                    await asyncio.sleep(delay_needed)
+
             self._last_request_time = time.time()
             
             messages = [

@@ -159,19 +159,23 @@ class TestRunner:
     
     def _log_experiment_start(self, prompt_file: Path, test_case_file: Path, model_name: str) -> None:
         """Log the initiation of an experiment trial."""
-        print(f"→ Initiating: {prompt_file.name} × {test_case_file.name} × {model_name}")
+        print(f"→ Queued: {prompt_file.name} × {test_case_file.name} × {model_name}")
     
     def _log_experiment_result(
-        self, 
-        result: ExperimentResult, 
-        experiment_number: int, 
+        self,
+        result: ExperimentResult,
+        experiment_number: int,
         total_experiments: int
     ) -> None:
         """Log the completion of an experiment trial."""
+        # Extract filename without extension for cleaner display
+        prompt_name = Path(result.prompt_file).stem
+        test_case_name = Path(result.test_case_file).stem
+
         if result.status == "success":
-            print(f"  [{experiment_number}/{total_experiments}] ✓ Completed ({result.duration_seconds:.2f}s)")
+            print(f"  [{experiment_number}/{total_experiments}] ✓ Completed: {prompt_name} × {test_case_name} × {result.model_name} ({result.duration_seconds:.2f}s)")
         else:
-            print(f"  [{experiment_number}/{total_experiments}] ✗ Failed: {result.status}")
+            print(f"  [{experiment_number}/{total_experiments}] ✗ Failed: {prompt_name} × {test_case_name} × {result.model_name} - {result.status}")
             if result.error_details:
                 error_msg = result.error_details.get('message', 'Unknown error')
                 print(f"    Error: {error_msg[:100]}{'...' if len(error_msg) > 100 else ''}")
@@ -205,27 +209,30 @@ class TestRunner:
         return response.content, response.model
     
     async def _run_experiment_core_async(
-        self, 
-        prompt_file: Path, 
-        test_case_file: Path, 
+        self,
+        prompt_file: Path,
+        test_case_file: Path,
         model_name: str,
         log_start: bool = True
     ) -> ExperimentResult:
         """Core experiment execution logic for async operations."""
         if log_start:
             self._log_experiment_start(prompt_file, test_case_file, model_name)
-        
+
         start_time = time.time()
-        
+
         # Load content - this is a pure, side-effect-free operation
         system_message = self.load_file_content(prompt_file)
         user_message = self.load_file_content(test_case_file)
-        
+
         # Create result object in its initial state
         result = self._create_experiment_result(
             prompt_file, test_case_file, model_name, system_message, user_message
         )
-        
+
+        # Log when we acquire semaphore and start API call (true concurrency bottleneck)
+        print(f"▶ API Call: {prompt_file.name} × {test_case_file.name} × {model_name}")
+
         try:
             # Execute the transformation through the LLM manifold
             content, response_model = await self._execute_llm_request_async(
@@ -234,13 +241,13 @@ class TestRunner:
             result.response_content = content
             result.response_model_name = response_model
             result.status = "success"
-            
+
         except Exception as e:
             result = self._handle_experiment_error(result, e)
-        
+
         finally:
             result.duration_seconds = time.time() - start_time
-        
+
         return result
     
     def _run_experiment_core_sync(
@@ -382,7 +389,12 @@ class TestRunner:
         
         # Print run initialization
         self._print_run_header(run_id, total_experiments, is_async=True)
-        
+
+        # Log concurrency behavior
+        print(f"Concurrency: {self.llm_client.max_concurrent_requests} concurrent API calls max")
+        print(f"Rate limiting: {self.llm_client.request_delay}s delay between API requests")
+        print("File loading: concurrent | API calls: rate-limited | All experiments queued immediately\n")
+
         # Execution state management
         successful_experiments = 0
         completed_experiments = 0

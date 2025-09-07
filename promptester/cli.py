@@ -199,7 +199,6 @@ Examples:
             
             print(f"\nExperimental run completed successfully.")
             print(f"Run ID: {run_id}")
-            print(f"\nTo view results: python -m src.cli results --run-id={run_id}")
             return 0
             
         except KeyboardInterrupt:
